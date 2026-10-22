@@ -1,0 +1,54 @@
+# 视频压缩 - 发布工作流
+# 触发方式：推送 tag（如 v0.1.0 / v1.0.0）时自动打包并创建 GitHub Release
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 支持手动触发（调试用）
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows amd64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.4'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.1
+
+      - name: Build with Wails
+        run: |
+          wails build -clean
+        shell: pwsh
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $zip = "video_compress-${{ github.ref_name }}-windows-amd64.zip"
+          Compress-Archive -Path "build/bin/video_compress.exe" -DestinationPath $zip -Force
+          Write-Host "packaged: $zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            video_compress-${{ github.ref_name }}-windows-amd64.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true

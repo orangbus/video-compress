@@ -1,0 +1,36 @@
+# Wails 构建产物
+build/bin
+
+# 前端依赖与构建
+node_modules
+frontend/dist
+
+# 视频源文件与输出（大文件不入库，由 CI 构建）
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.flv
+*.wmv
+*.ts
+*.webm
+*.m4v
+*.rmvb
+*.mpg
+*.mpeg
+
+# 编译产物
+video_compress.exe
+
+# 压缩输出目录
+compressed/
+
+# 运行状态文件（断点续传记录）
+.yasuo_state.json
+.yasuo_global_state.json
+
+# IDE / 系统
+.vscode/
+.idea/
+*.log
+Thumbs.db

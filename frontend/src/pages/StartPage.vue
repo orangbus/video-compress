@@ -69,7 +69,13 @@ async function pickFiles() {
     ],
     properties: ['multiSelections', 'openFile'],
   })
-  if (res) addPaths(res)
+  // 兼容返回单个字符串或字符串数组
+  const paths = Array.isArray(res) ? res : res ? [res] : []
+  if (paths.length) {
+    await addPaths(paths)
+  } else {
+    showToast('未选择文件')
+  }
 }
 
 async function pickFolder() {
@@ -93,9 +99,14 @@ function mergeTasks(tasks) {
   }
 }
 
-function addPaths(paths) {
-  const added = Backend.AddFiles(paths)
-  if (added && added.length) mergeTasks(added)
+async function addPaths(paths) {
+  const added = await Backend.AddFiles(paths)
+  if (added && added.length) {
+    mergeTasks(added)
+    showToast(`已添加 ${added.length} 个视频`)
+  } else {
+    showToast('未找到支持的视频文件')
+  }
 }
 
 function onDrop(e) {
@@ -263,8 +274,9 @@ const fileSummary = computed(() => {
         <div class="dropzone" :class="{ drag: dragging }"
              @dragover.prevent="dragging = true"
              @dragleave.prevent="dragging = false"
-             @drop.prevent="onDrop">
-          <div class="dz-title">拖拽视频到这里</div>
+             @drop.prevent="onDrop"
+             @click="pickFiles">
+          <div class="dz-title">拖拽视频到这里，或点击选择文件</div>
           <div class="dz-sub">支持 mp4 / mkv / mov / avi / flv / wmv / ts / webm 等格式</div>
         </div>
 

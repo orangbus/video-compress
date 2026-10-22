@@ -29,6 +29,7 @@ export const Runtime = {
   BrowserOpenURL: (url) => rt()?.BrowserOpenURL(url),
   WindowMinimise: () => rt()?.WindowMinimise(),
   WindowToggleMaximise: () => rt()?.WindowToggleMaximise(),
+  WindowIsMaximised: () => rt()?.WindowIsMaximised(),
   WindowClose: () => rt()?.WindowClose(),
 }
 

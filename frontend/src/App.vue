@@ -157,6 +157,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-layout">
     <div class="app-body">
+      <!-- 全宽顶部拖拽带：整个窗口顶部都可以拖动（按钮区不遮） -->
+      <div class="top-drag" title="按住此处可拖动窗口"></div>
+
       <aside class="sidebar">
         <!-- 顶部 logo 区即窗口拖拽区（无边框窗口移动用） -->
         <div class="brand drag-region" title="按住此处可拖动窗口">

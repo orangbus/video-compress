@@ -52,6 +52,20 @@ body {
 
 .app-body { display: flex; flex: 1; overflow: hidden; }
 
+/* 全宽顶部拖拽带（无边框窗口：整个窗口顶部可拖动，按钮/弹窗层不受影响） */
+.top-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  --wails-draggable: drag;
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 20;
+}
+
 .sidebar-footer {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding: 10px 6px 6px;
@@ -186,7 +200,7 @@ body {
 .main {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px 32px;
+  padding: 30px 28px 32px; /* 顶部留白 = 拖拽带高度，保证页面顶部按钮不被遮挡 */
 }
 
 .page-title { font-size: 20px; font-weight: 700; margin: 0 0 4px; }

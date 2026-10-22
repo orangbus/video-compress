@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -18,15 +20,16 @@ import (
 )
 
 // AppVersion 当前软件版本（与 GitHub Release tag 对应）
-const AppVersion = "0.1.0"
+const AppVersion = "1.0.0"
 
 // App 主应用结构
 type App struct {
-	ctx      context.Context
-	mu       sync.Mutex
-	env      video.EnvInfo
-	envFresh bool
-	engine   *video.Engine
+	ctx           context.Context
+	mu            sync.Mutex
+	env           video.EnvInfo
+	envFresh      bool
+	engine        *video.Engine
+	forceQuitting bool // 用户已确认强制退出（放行 OnBeforeClose）
 }
 
 // UpdateInfo 版本检测结果
@@ -163,20 +166,20 @@ func (a *App) GetModes() []Mode {
 		{
 			ID:          "gpu",
 			Title:       "GPU 硬编",
-			Desc:        "速度最快，推荐日常批量使用；需 NVIDIA GTX 10 系以上显卡支持 HEVC",
-			Tag:         "hevc_nvenc · CRF 18 · p5 · 4 并行",
+			Desc:        "速度最快，体积约为原片 60%~70%，推荐日常批量使用；需 NVIDIA GTX 10 系以上显卡支持 HEVC",
+			Tag:         "hevc_nvenc · QP 28 · p5 · 4 并行",
 			Encoder:     "nvenc",
-			CRF:         18,
+			CRF:         28,
 			Preset:      "p5",
 			Concurrency: 4,
 		},
 		{
 			ID:          "quality",
 			Title:       "更清晰的画质",
-			Desc:        "CRF 数值调小，画质更清晰但文件更大，适合重要素材",
-			Tag:         "hevc_nvenc · CRF 16 · p5 · 4 并行",
+			Desc:        "质量数值调小，画质更清晰但文件更大，适合重要素材",
+			Tag:         "hevc_nvenc · QP 26 · p5 · 4 并行",
 			Encoder:     "nvenc",
-			CRF:         16,
+			CRF:         26,
 			Preset:      "p5",
 			Concurrency: 4,
 		},
@@ -196,8 +199,40 @@ func (a *App) GetModes() []Mode {
 
 // --- 任务管理 ---
 
-// AddFiles 添加视频文件任务（重复添加自动去重）
-func (a *App) AddFiles(paths []string) []*video.VideoTask {
+// OpenVideoFiles 弹出系统文件选择框（可多选），返回所选文件路径
+func (a *App) OpenVideoFiles() []string {
+	if a.ctx == nil {
+		return nil
+	}
+	files, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择视频文件（可多选）",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "视频文件", Pattern: "*.mp4;*.mkv;*.mov;*.avi;*.flv;*.wmv;*.ts;*.webm;*.m4v;*.rmvb;*.mpg;*.mpeg"},
+			{DisplayName: "所有文件", Pattern: "*"},
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return files
+}
+
+// OpenVideoFolder 弹出系统文件夹选择框，返回所选目录（递归扫描）
+func (a *App) OpenVideoFolder() string {
+	if a.ctx == nil {
+		return ""
+	}
+	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择视频文件夹（递归扫描）",
+	})
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// AddFiles 添加视频文件任务（重复添加自动去重）。outDir 非空时输出到该目录。
+func (a *App) AddFiles(paths []string, outDir string) []*video.VideoTask {
 	a.mu.Lock()
 	e := a.engine
 	a.mu.Unlock()
@@ -206,22 +241,22 @@ func (a *App) AddFiles(paths []string) []*video.VideoTask {
 	}
 	added := []*video.VideoTask{}
 	for _, p := range paths {
-		if t, err := e.AddPath(p, ""); err == nil {
+		if t, err := e.AddPath(p, strings.TrimSpace(outDir)); err == nil {
 			added = append(added, t)
 		}
 	}
 	return added
 }
 
-// AddFolder 递归添加文件夹内的视频
-func (a *App) AddFolder(dir string) []*video.VideoTask {
+// AddFolder 递归添加文件夹内的视频。outDir 非空时输出到该目录。
+func (a *App) AddFolder(dir, outDir string) []*video.VideoTask {
 	a.mu.Lock()
 	e := a.engine
 	a.mu.Unlock()
 	if e == nil {
 		return nil
 	}
-	tasks, err := e.AddFolder(dir, "")
+	tasks, err := e.AddFolder(dir, strings.TrimSpace(outDir))
 	if err != nil {
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "video:event", video.Event{Type: "error", Task: &video.VideoTask{Error: err.Error()}})
@@ -257,6 +292,25 @@ func (a *App) RetryFailed() int {
 }
 
 // ClearDone 清理已完成/跳过的任务（保留失败供重试）
+// ClearTasks 清空所有未在运行的任务（开始页"清空列表"用），返回移除数量
+func (a *App) ClearTasks() int {
+	a.mu.Lock()
+	e := a.engine
+	a.mu.Unlock()
+	if e == nil {
+		return 0
+	}
+	n := 0
+	for _, t := range e.Snapshot() {
+		if t.Status != video.StatusRunning {
+			_ = e.RemoveTask(t.ID)
+			n++
+		}
+	}
+	return n
+}
+
+// ClearDone 清理完成页记录（含跨会话历史与状态文件），返回清理条数
 func (a *App) ClearDone() int {
 	a.mu.Lock()
 	e := a.engine
@@ -271,6 +325,7 @@ func (a *App) ClearDone() int {
 			n++
 		}
 	}
+	n += e.ClearHistory()
 	return n
 }
 
@@ -330,6 +385,8 @@ func (a *App) StartCompress(concurrency, crf int, preset, encoder, outDir string
 		Encoder:     encoder,
 		OutDir:      strings.TrimSpace(outDir),
 	}
+	// 开始前统一重算所有待处理任务的输出路径（含切换自定义/默认目录的场景），并按新路径重判跳过状态
+	e.SetOutDir(opts.OutDir)
 	if err := e.Start(opts); err != nil {
 		return err.Error()
 	}
@@ -401,7 +458,12 @@ func (a *App) CheckUpdate() UpdateInfo {
 func (a *App) BeforeClose(ctx context.Context) bool {
 	a.mu.Lock()
 	e := a.engine
+	force := a.forceQuitting
 	a.mu.Unlock()
+	// 用户已在确认弹窗里点了"退出程序"，直接放行
+	if force {
+		return false
+	}
 	if e == nil || !e.Running() {
 		return false // 没有压缩任务，直接关闭
 	}
@@ -416,6 +478,7 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 func (a *App) ForceQuit() {
 	a.mu.Lock()
 	e := a.engine
+	a.forceQuitting = true // 放行 BeforeClose，避免二次弹窗
 	a.mu.Unlock()
 	if e != nil {
 		e.Stop()
@@ -457,15 +520,32 @@ func normalizeVersion(v string) string {
 // --- 其它 ---
 
 // OpenFolder 在资源管理器中打开目录
+// OpenFolder 在资源管理器中打开文件所在目录并选中该文件
 func (a *App) OpenFolder(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err.Error()
 	}
-	cmd := exec.Command("explorer", abs)
-	if err := cmd.Start(); err != nil {
-		return err.Error()
+	// explorer /select,<文件> 会打开所在目录并选中文件；explorer 始终返回退出码 1，不能据此判断失败
+	sel := abs
+	selectFile := true
+	if _, err := os.Stat(abs); err != nil {
+		// 文件不存在（如已被删除）：回退到打开父目录
+		dir := filepath.Dir(abs)
+		if _, derr := os.Stat(dir); derr != nil {
+			return "文件或目录不存在：" + abs
+		}
+		sel = dir
+		selectFile = false
 	}
+	var cmd *exec.Cmd
+	if selectFile {
+		cmd = exec.Command("explorer.exe", "/select,"+sel)
+	} else {
+		cmd = exec.Command("explorer.exe", sel)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	_ = cmd.Start()
 	return ""
 }
 

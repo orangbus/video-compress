@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { store, applyMode } from './store'
+import { store, showToast, applyMode, addPending } from './store'
 import { Backend, Runtime } from './bridge'
 import StartPage from './pages/StartPage.vue'
 import ConvertingPage from './pages/ConvertingPage.vue'
@@ -43,7 +43,7 @@ function winMax() {
   setTimeout(refreshMaxState, 400)
 }
 
-function winClose() { Runtime.WindowClose() }
+function winClose() { Runtime.Quit() }
 
 // 打开开源地址（图标 + 仓库名）
 const SOURCE_URL = 'https://github.com/orangbus/video-compress'
@@ -72,19 +72,51 @@ function quitNow() { Backend.ForceQuit() }
 function onVideoEvent(ev) {
   const t = ev.task
   if (t && (ev.type === 'task_update' || ev.type === 'task_done' || ev.type === 'task_failed')) {
-    const idx = store.files.findIndex((f) => f.id === t.id)
-    if (idx >= 0) store.files[idx] = t
+    upsertFile(t)
   }
   if (ev.type === 'started') {
     store.converting = true
   }
   if (ev.type === 'batch_done') {
     store.converting = false
+    const allSuccess = !ev.stopped && (!ev.failed || ev.failed === 0)
+    // 全部成功：后端已重置会话，前端回到开始页第一步，可重新选模式/选视频
+    if (allSuccess) {
+      store.step = 1
+      store.pendingIds = []
+      store.files = []
+      store.page = 'start'
+      showToast(`已完成 ${ev.done || 0} 个视频，可在「完成」页查看结果`)
+    }
     refreshAll()
   }
   if (ev.type === 'error' && t && t.error) {
     store.toast = t.error
   }
+}
+
+// 全局文件拖拽：Wails OnFileDrop 才能拿到真实路径（WebView2 的 dataTransfer.files 没有 .path）
+function handleFileDrop(x, y, paths) {
+  if (!paths || !paths.length) return
+  const outDir = (store.advanced.outDir || '').trim()
+  Backend.AddFiles(paths, outDir)
+    .then((added) => {
+      if (added && added.length) {
+        addPending(added)
+        // 在开始页拖入时直接进入添加视频步骤
+        if (store.page === 'start') store.step = 2
+        store.toast = `已添加 ${added.length} 个视频`
+      } else {
+        store.toast = '未找到支持的视频文件'
+      }
+    })
+    .catch((e) => { store.toast = '添加失败：' + e })
+}
+
+function upsertFile(task) {
+  const idx = store.files.findIndex((f) => f.id === task.id)
+  if (idx >= 0) store.files[idx] = task
+  else store.files.push(task)
 }
 
 async function refreshAll() {
@@ -122,6 +154,8 @@ onMounted(async () => {
   })
   // 压缩中关闭窗口 -> 弹自定义确认框
   Runtime.On('app:confirm-close', onConfirmClose)
+  // 全局文件拖拽添加（任意页面拖入视频文件都有效）
+  Runtime.OnFileDrop(handleFileDrop)
   await refreshAll()
   try {
     store.modes = await Backend.GetModes()
@@ -150,6 +184,7 @@ function onResize() {
 
 onBeforeUnmount(() => {
   Runtime.Off('video:event', onVideoEvent)
+  Runtime.OnFileDropOff()
   window.removeEventListener('resize', onResize)
 })
 </script>

@@ -38,6 +38,8 @@ type VideoTask struct {
 	OutBytes int64   `json:"outBytes"`
 	Ratio    float64 `json:"ratio"` // 输出/输入 %
 	Skipped  bool    `json:"skipped"`
+	Param    string  `json:"param"` // 压缩参数指纹（encoder|crf|preset），用于断点续传判断
+	Note     string  `json:"note"`  // 附加说明（如自动重压提示）
 }
 
 // Event 推送到前端的压缩事件
@@ -131,9 +133,10 @@ func (e *Engine) AddPath(absPath, outDir string) (*VideoTask, error) {
 		}
 	}
 
-	// 断点续传：若历史记录中该文件已完成且输出存在，本次标记 skipped（自动跳过）
+	// 断点续传：若历史记录中该文件已完成且输出存在，本次标记 skipped（自动跳过）。
+	// 但若旧产物比源文件还大（压缩失败/早期参数问题），不跳过，重新压缩覆盖。
 	if old, ok := e.history[outPath]; ok && old.Status == StatusDone {
-		if _, err := os.Stat(outPath); err == nil {
+		if outSt, err := os.Stat(outPath); err == nil && outSt.Size() > 0 && outSt.Size() <= st.Size() {
 			t.Status = StatusSkipped
 			t.Skipped = true
 			t.CostSec = old.CostSec
@@ -142,6 +145,8 @@ func (e *Engine) AddPath(absPath, outDir string) (*VideoTask, error) {
 			t.Ratio = old.Ratio
 			t.EndAt = old.EndAt
 			t.Duration = old.Duration
+			t.Param = old.Param
+			t.Note = old.Note
 		}
 	}
 	if t.Duration <= 0 {
@@ -232,6 +237,51 @@ func (e *Engine) RetryFailed() int {
 	return n
 }
 
+// SetOutDir 把待处理任务（pending/failed）的输出目录统一改为 outDir（开始压缩时高级选项指定）。
+// 返回受影响的任务数。outDir 为空表示不改动。
+func (e *Engine) SetOutDir(outDir string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if outDir != "" {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return 0
+		}
+	}
+	n := 0
+	for _, id := range e.order {
+		t := e.tasks[id]
+		if t == nil || t.Status == StatusRunning {
+			continue
+		}
+		newPath := computeOutPath(t.AbsPath, outDir)
+		if !strings.EqualFold(t.OutPath, newPath) {
+			t.OutPath = newPath
+			n++
+		}
+		// 按新输出路径重新判定是否可跳过
+		if old, ok := e.history[newPath]; ok && old.Status == StatusDone {
+			if outSt, err := os.Stat(newPath); err == nil && outSt.Size() > 0 && outSt.Size() <= t.Size {
+				t.Status = StatusSkipped
+				t.Skipped = true
+				t.Progress = 100
+				t.InBytes = old.InBytes
+				t.OutBytes = old.OutBytes
+				t.Ratio = old.Ratio
+				t.Param = old.Param
+				t.Note = old.Note
+				continue
+			}
+		}
+		if t.Status == StatusSkipped {
+			t.Status = StatusPending
+			t.Skipped = false
+			t.Progress = 0
+			t.Error = ""
+		}
+	}
+	return n
+}
+
 // Start 开始压缩队列中的 pending/failed 任务。异步执行，通过事件回调反馈进度。
 func (e *Engine) Start(opts Options) error {
 	e.mu.Lock()
@@ -240,12 +290,35 @@ func (e *Engine) Start(opts Options) error {
 		return fmt.Errorf("已有压缩任务正在进行")
 	}
 	queue := []string{}
+	fp := paramFingerprint(opts)
 	for _, id := range e.order {
 		t := e.tasks[id]
 		if t.Status == StatusPending || t.Status == StatusFailed {
 			t.Status = StatusPending
 			t.Error = ""
+			t.Param = fp
 			queue = append(queue, id)
+			continue
+		}
+		// 历史已完成但压缩参数发生变化（或输出已被删除）：重新压缩覆盖
+		if t.Status == StatusSkipped {
+			needRecompress := true
+			if old, ok := e.history[t.OutPath]; ok && old.Param == fp && old.Status == StatusDone {
+				if outSt, err := os.Stat(t.OutPath); err == nil && outSt.Size() > 0 && outSt.Size() <= t.Size {
+					needRecompress = false
+				}
+			}
+			if needRecompress {
+				t.Status = StatusPending
+				t.Skipped = false
+				t.Progress = 0
+				t.Error = ""
+				t.InBytes = 0
+				t.OutBytes = 0
+				t.Ratio = 0
+				t.Param = fp
+				queue = append(queue, id)
+			}
 		}
 	}
 	if len(queue) == 0 {
@@ -321,6 +394,20 @@ func (e *Engine) History() []*VideoTask {
 	return out
 }
 
+// ClearHistory 清空跨会话历史记录并删除磁盘上的状态文件，返回清理条数
+func (e *Engine) ClearHistory() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := len(e.history)
+	e.history = map[string]*VideoTask{}
+	for d := range e.stateDirs {
+		_ = os.Remove(filepath.Join(d, stateFileName))
+	}
+	e.stateDirs = map[string]bool{}
+	_ = os.Remove(filepath.Join(ExeDir(), ".yasuo_global_state.json"))
+	return n
+}
+
 // ---- 内部实现 ----
 
 func (e *Engine) runBatch(ctx context.Context, queue []string, opts Options) {
@@ -366,6 +453,12 @@ done:
 		}
 	}
 	e.emitIf(Event{Type: "batch_done", Total: total, Done: e.countStatus(StatusDone, StatusSkipped), Failed: e.countStatus(StatusFailed), Stopped: stopped})
+	// 全部成功（非手动停止、无失败）：清空会话任务，开始页重置，可重新选参数/选视频；记录已入 history。
+	// 有失败时保留会话，便于在转化页重试失败任务。
+	if !stopped && e.countStatus(StatusFailed) == 0 {
+		e.tasks = map[string]*VideoTask{}
+		e.order = nil
+	}
 	e.mu.Unlock()
 	e.persistGlobal()
 }
@@ -380,39 +473,69 @@ func (e *Engine) runOne(ctx context.Context, id string, opts Options) {
 	t.Status = StatusRunning
 	t.Progress = 0
 	t.Error = ""
+	t.Note = ""
 	t.StartAt = time.Now().UnixMilli()
 	cp := *t
 	e.mu.Unlock()
 	e.emitIf(Event{Type: "task_update", Task: &cp, Total: len(e.order)})
 
-	cmd := BuildCmd(Job{AbsPath: t.AbsPath, OutPath: t.OutPath}, opts.CRF, opts.Preset, opts.Encoder)
+	curOpts := opts
 	durMicros := int64(t.Duration * 1e6)
-	var lastPct float64
+	var outBytes int64
+	var runErr error
+	note := ""
 
-	outBytes, runErr := RunFFmpegProgress(ctx, e.ffmpeg, cmd, durMicros, func(delta int64) {
-		if durMicros <= 0 {
-			return
+	// 自动重压保护：若输出比原片大（参数过高 / 源片已低码率），自动提高 QP/CRF 重压，最多 4 次
+	for attempt := 0; ; attempt++ {
+		var lastPct float64
+		cmd := BuildCmd(Job{AbsPath: t.AbsPath, OutPath: t.OutPath}, curOpts.CRF, curOpts.Preset, curOpts.Encoder)
+		outBytes, runErr = RunFFmpegProgress(ctx, e.ffmpeg, cmd, durMicros, func(us int64) {
+			if durMicros <= 0 {
+				return
+			}
+			pct := float64(us) / float64(durMicros) * 100
+			e.mu.Lock()
+			if tt := e.tasks[id]; tt != nil {
+				if pct > 100 {
+					pct = 100
+				}
+				if pct > tt.Progress {
+					tt.Progress = pct
+				}
+				cp = *tt
+			}
+			e.mu.Unlock()
+			if pct-lastPct >= 0.5 || pct >= 100 {
+				lastPct = pct
+				e.emitIf(Event{Type: "task_update", Task: &cp, Total: len(e.order)})
+			}
+		})
+		if runErr != nil {
+			break
 		}
-		pct := float64(delta) / float64(durMicros) * 100
+		if outBytes <= t.Size {
+			break // 输出不大于原片，达成压缩目的
+		}
+		// 输出更大：提高参数继续压
+		next, bump := nextCrfForSize(curOpts, attempt)
+		if !bump {
+			break
+		}
+		qLabel := "QP"
+		if curOpts.Encoder == "libx265" {
+			qLabel = "CRF"
+		}
+		note = fmt.Sprintf("首次输出大于原片，已自动调高 %s 至 %d 重新压缩", qLabel, next)
+		curOpts.CRF = next
 		e.mu.Lock()
-		if t := e.tasks[id]; t != nil {
-			if pct > 100 {
-				pct = 100
-			}
-			// 按实际已编码进度累计
-			base := 0.0
-			_ = base
-			if pct > t.Progress {
-				t.Progress = pct
-			}
-			cp = *t
+		if tt := e.tasks[id]; tt != nil {
+			tt.Progress = 0
+			tt.Note = note
+			cp = *tt
 		}
 		e.mu.Unlock()
-		if pct-lastPct >= 0.5 || pct >= 100 {
-			lastPct = pct
-			e.emitIf(Event{Type: "task_update", Task: &cp, Total: len(e.order)})
-		}
-	})
+		e.emitIf(Event{Type: "task_update", Task: &cp, Total: len(e.order)})
+	}
 
 	e.mu.Lock()
 	t, ok = e.tasks[id]
@@ -438,6 +561,13 @@ func (e *Engine) runOne(ctx context.Context, id string, opts Options) {
 		}
 		t.CostSec = float64(time.Now().UnixMilli()-t.StartAt) / 1000
 		t.EndAt = time.Now().UnixMilli()
+		t.Param = paramFingerprint(curOpts)
+		if note != "" {
+			t.Note = note
+		}
+		if outBytes > t.Size {
+			t.Note = "压缩后仍大于原片：源视频可能已是高压缩低码率，建议进一步调高 QP/CRF 数值"
+		}
 		e.addHistoryLocked(t)
 	}
 	cp = *t
@@ -534,6 +664,35 @@ func computeOutPath(absPath, outDir string) string {
 		outDir = filepath.Join(filepath.Dir(absPath), "compressed")
 	}
 	return filepath.Join(outDir, base)
+}
+
+// 参数指纹：同一输出文件只有在压缩参数完全一致时才跳过
+func paramFingerprint(opts Options) string {
+	return fmt.Sprintf("%s|%d|%s", opts.Encoder, opts.CRF, opts.Preset)
+}
+
+// 自动重压上限：nvenc 最多把 QP 提到 40，libx265 最多把 CRF 提到 40
+const autoRecompressMax = 40
+
+// nextCrfForSize 输出比原片大时计算下一档参数：
+// nvenc 每档 +4（QP），libx265 每档 +6（CRF），最多自动重压 4 次。
+// 返回 (下一档数值, 是否需要继续重压)。
+func nextCrfForSize(curOpts Options, attempt int) (int, bool) {
+	if attempt >= 4 {
+		return curOpts.CRF, false
+	}
+	step := 4
+	if curOpts.Encoder == "libx265" {
+		step = 6
+	}
+	if curOpts.CRF >= autoRecompressMax {
+		return curOpts.CRF, false
+	}
+	n := curOpts.CRF + step
+	if n > autoRecompressMax {
+		n = autoRecompressMax
+	}
+	return n, true
 }
 
 func samePath(a, b string) bool {

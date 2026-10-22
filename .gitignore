@@ -20,6 +20,7 @@ frontend/dist
 *.mpeg
 
 # 编译产物
+*.exe
 video_compress.exe
 
 # 压缩输出目录

@@ -40,8 +40,8 @@ function currentParams() {
   }
 }
 
-function openOut(task) {
-  const err = Backend.OpenFolder(task.outPath)
+async function openOut(task) {
+  const err = await Backend.OpenFolder(task.outPath)
   if (err) showToast(err)
 }
 </script>
@@ -84,6 +84,7 @@ function openOut(task) {
                  :style="{ width: (f.status === 'failed' ? 100 : f.progress) + '%' }"></div>
           </div>
           <div v-if="f.status === 'failed'" class="error-text" style="margin-top: 4px">{{ f.error }}</div>
+          <div v-if="f.note" class="task-note">⟳ {{ f.note }}</div>
         </div>
         <span class="fsize muted" style="font-size: 12px; flex-shrink: 0">{{ fmtSize(f.size) }}</span>
       </div>

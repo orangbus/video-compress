@@ -60,7 +60,15 @@ func TestEngineCompressAndResume(t *testing.T) {
 	}
 	waitIdle(t, e, 60*time.Second)
 
-	task = e.Snapshot()[0]
+	// 全部成功后会话已重置（任务清空，可重新选择），结果进入历史
+	if len(e.Snapshot()) != 0 {
+		t.Fatalf("成功批次后会话应重置为空，实际 %d 条", len(e.Snapshot()))
+	}
+	hist1 := e.History()
+	if len(hist1) != 1 {
+		t.Fatalf("history 应有 1 条，实际 %d", len(hist1))
+	}
+	task = hist1[0]
 	if task.Status != StatusDone {
 		t.Fatalf("expected done, got %s (err=%s)", task.Status, task.Error)
 	}
@@ -69,6 +77,9 @@ func TestEngineCompressAndResume(t *testing.T) {
 	}
 	if task.Ratio <= 0 || task.CostSec <= 0 {
 		t.Fatalf("ratio/cost not recorded: %+v", task)
+	}
+	if task.Param == "" {
+		t.Fatalf("param fingerprint not recorded: %+v", task)
 	}
 
 	// 2) 断点续传：再次添加同一文件 → 应标记 skipped

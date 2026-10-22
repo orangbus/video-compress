@@ -29,18 +29,19 @@
       </table>
       <p style="margin-top: 8px"><b>建议</b>：讲课、录屏这类画面静止多的视频，硬编画质差别几乎看不出来，直接选「GPU 硬编」。</p>
 
-      <h3>四、CRF 画质档位</h3>
+      <h3>四、CRF / QP 画质档位</h3>
       <table>
         <thead>
           <tr><th>档位</th><th>说明</th></tr>
         </thead>
         <tbody>
-          <tr><td>CRF 18（默认）</td><td>画质最好，体积约原片的 35%~40%</td></tr>
-          <tr><td>CRF 23（推荐）</td><td>视觉几乎无差别，体积约原片的 25%，性价比最高</td></tr>
-          <tr><td>CRF 26</td><td>更小，但屏幕小字/数字边缘可能略糊</td></tr>
+          <tr><td>CRF 18（CPU 软编默认）</td><td>画质最好，体积约原片的 35%~40%</td></tr>
+          <tr><td>CRF 23（CPU 软编推荐）</td><td>视觉几乎无差别，体积约原片的 25%，性价比最高</td></tr>
+          <tr><td>QP 28（GPU 硬编默认）</td><td>速度最快，体积约原片的 60%~70%</td></tr>
+          <tr><td>QP 26（GPU 更清晰）</td><td>画质更清晰，体积约原片的 80% 左右</td></tr>
         </tbody>
       </table>
-      <p style="margin-top: 8px">CRF 每 +6，体积大致减半。想更小：调高 CRF → 换更慢的 preset → 降分辨率（会损失清晰度，不建议）。</p>
+      <p style="margin-top: 8px">CPU 软编用 CRF（每 +6 体积大致减半）；GPU 硬编用 QP（值与 CRF 不可直接换算，实测 QP 24≈原大小、QP 28≈70%、QP 32≈50%）。想更小：调高数值 → 换更慢的 preset → 降分辨率（会损失清晰度，不建议）。</p>
 
       <h3>五、出错与断点续传</h3>
       <ul>

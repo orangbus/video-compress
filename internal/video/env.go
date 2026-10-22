@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -95,7 +96,9 @@ func isLocalBundled(ffmpegPath, exeDir string) bool {
 func ffmpegVersion(ffmpegPath string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, ffmpegPath, "-version").Output()
+	c := exec.CommandContext(ctx, ffmpegPath, "-version")
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := c.Output()
 	if err != nil {
 		return ""
 	}
@@ -107,7 +110,9 @@ func ffmpegVersion(ffmpegPath string) string {
 func hasEncoder(ffmpegPath, enc string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, ffmpegPath, "-hide_banner", "-encoders").Output()
+	c := exec.CommandContext(ctx, ffmpegPath, "-hide_banner", "-encoders")
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := c.Output()
 	if err != nil {
 		return false
 	}
@@ -160,8 +165,10 @@ func gpuName() string {
 	if ps == "" {
 		return ""
 	}
-	out, err := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive",
-		"-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name").Output()
+	c := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive",
+		"-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name")
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := c.Output()
 	if err != nil {
 		return ""
 	}

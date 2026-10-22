@@ -10,7 +10,7 @@ async function refresh() {
 }
 
 async function openOut(task) {
-  const err = Backend.OpenFolder(task.outPath)
+  const err = await Backend.OpenFolder(task.outPath)
   if (err) showToast(err)
 }
 
@@ -50,13 +50,18 @@ async function clearDone() {
         </thead>
         <tbody>
           <tr v-for="t in rows" :key="t.outPath">
-            <td :title="t.absPath">{{ t.absPath.split(/[\\/]/).pop() }}</td>
+            <td :title="t.absPath">
+              {{ t.absPath.split(/[\\/]/).pop() }}
+              <div v-if="t.note" class="task-note">{{ t.note }}</div>
+            </td>
             <td><span class="status-pill" :class="t.status">{{ statusText[t.status] || t.status }}</span></td>
             <td>{{ fmtDuration(t.costSec) }}</td>
             <td>
               <template v-if="t.status === 'done'">
-                {{ t.ratio.toFixed(1) }}%
-                <span class="muted" style="font-size: 11px">(省 {{ (100 - t.ratio).toFixed(1) }}%)</span>
+                <span :class="{ 'ratio-bad': t.ratio > 100 }">{{ t.ratio.toFixed(1) }}%</span>
+                <span class="muted" style="font-size: 11px">
+                  ({{ t.ratio <= 100 ? '省' : '增大' }} {{ Math.abs(100 - t.ratio).toFixed(1) }}%)
+                </span>
               </template>
               <template v-else>-</template>
             </td>

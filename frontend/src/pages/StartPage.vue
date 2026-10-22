@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { store, showToast, applyMode, finalParams } from '../store'
-import { Backend, Runtime, fmtSize } from '../bridge'
+import { store, showToast, applyMode, finalParams, addPending, removePending, resetBatch } from '../store'
+import { Backend, fmtSize } from '../bridge'
 
 const dragging = ref(false)
 const startError = ref('')
@@ -45,30 +45,30 @@ function selectMode(m) {
   applyMode(m)
 }
 
-// 步骤导航
+// 步骤导航（两步制：1 选模式/参数 -> 2 添加视频并直接开始）
 const canNext1 = computed(() => !!store.selectedMode)
-const canNext2 = computed(() => store.files.length > 0)
+const pendingFiles = computed(() =>
+  store.pendingIds.map((id) => store.files.find((f) => f.id === id)).filter(Boolean)
+)
+const canStart = computed(() => pendingFiles.value.some((f) => f.status === 'pending' || f.status === 'failed' || f.status === 'skipped'))
 
 function nextStep() {
   if (store.step === 1 && !canNext1.value) return
-  if (store.step === 2 && !canNext2.value) return
-  store.step++
+  store.step = 2
 }
 
 function prevStep() {
   if (store.step > 1) store.step--
 }
 
-// 文件选择
+// 当前高级选项里的输出目录（未设置时为空，输出到各源目录/compressed）
+function currentOutDir() {
+  return (store.advanced.outDir || '').trim()
+}
+
+// 文件选择（通过后端打开系统对话框）
 async function pickFiles() {
-  const res = await Runtime.OpenFileDialog({
-    title: '选择视频文件（可多选）',
-    filters: [
-      { displayName: '视频文件', pattern: '*.mp4;*.mkv;*.mov;*.avi;*.flv;*.wmv;*.ts;*.webm;*.m4v;*.rmvb;*.mpg;*.mpeg' },
-      { displayName: '所有文件', pattern: '*' },
-    ],
-    properties: ['multiSelections', 'openFile'],
-  })
+  const res = await Backend.OpenVideoFiles()
   // 兼容返回单个字符串或字符串数组
   const paths = Array.isArray(res) ? res : res ? [res] : []
   if (paths.length) {
@@ -79,11 +79,11 @@ async function pickFiles() {
 }
 
 async function pickFolder() {
-  const dir = await Runtime.OpenDirectoryDialog({ title: '选择视频文件夹（递归扫描）' })
+  const dir = await Backend.OpenVideoFolder()
   if (dir) {
-    const added = await Backend.AddFolder(dir)
+    const added = await Backend.AddFolder(dir, currentOutDir())
     if (added && added.length) {
-      mergeTasks(added)
+      addPending(added)
       showToast(`已添加文件夹，共 ${added.length} 个视频`)
     } else {
       showToast('该文件夹内未找到支持的视频')
@@ -91,18 +91,10 @@ async function pickFolder() {
   }
 }
 
-function mergeTasks(tasks) {
-  for (const t of tasks) {
-    const idx = store.files.findIndex((f) => f.id === t.id)
-    if (idx >= 0) store.files[idx] = t
-    else store.files.push(t)
-  }
-}
-
 async function addPaths(paths) {
-  const added = await Backend.AddFiles(paths)
+  const added = await Backend.AddFiles(paths, currentOutDir())
   if (added && added.length) {
-    mergeTasks(added)
+    addPending(added)
     showToast(`已添加 ${added.length} 个视频`)
   } else {
     showToast('未找到支持的视频文件')
@@ -110,18 +102,26 @@ async function addPaths(paths) {
 }
 
 function onDrop(e) {
+  // WebView2 的 dataTransfer.files 拿不到真实路径，
+  // 实际拖拽添加由 App.vue 全局 Runtime.OnFileDrop 处理（拿到系统路径）
   dragging.value = false
-  const paths = [...e.dataTransfer.files].map((f) => f.path)
-  if (paths.length) addPaths(paths)
 }
 
-function removeFile(id) {
-  const err = Backend.RemoveTask(id)
+async function removeFile(id) {
+  const err = await Backend.RemoveTask(id)
   if (err) {
     showToast(err)
     return
   }
-  store.files = store.files.filter((f) => f.id !== id)
+  removePending(id)
+}
+
+// 清空当前批次（运行中的任务不能清）
+async function clearFiles() {
+  const n = await Backend.ClearTasks()
+  store.pendingIds = []
+  store.files = store.files.filter((f) => f.status === 'running')
+  showToast(n > 0 ? `已清空 ${n} 个已添加任务` : '列表已清空')
 }
 
 async function startCompress() {
@@ -132,15 +132,38 @@ async function startCompress() {
     startError.value = err
     return
   }
+  // 开始压缩后：向导重置回第一步，可重新选择模式和视频；后台任务继续在「转化」页显示
+  resetBatch()
   store.converting = true
   store.page = 'converting'
 }
 
-// 汇总当前已添加文件
+// 汇总当前批次文件
 const fileSummary = computed(() => {
-  const n = store.files.length
-  const done = store.files.filter((f) => f.status === 'done' || f.status === 'skipped').length
-  return { n, done }
+  const n = pendingFiles.value.length
+  const skipped = pendingFiles.value.filter((f) => f.status === 'done' || f.status === 'skipped').length
+  return { n, skipped }
+})
+
+// 实际将使用的压缩参数标签（随高级选项实时变化）
+const actualTag = computed(() => {
+  const p = finalParams()
+  const enc = p.encoder === 'nvenc' ? 'hevc_nvenc' : 'libx265'
+  const q = p.encoder === 'nvenc' ? 'QP' : 'CRF'
+  const out = p.outDir ? ` · 输出 ${p.outDir}` : ''
+  return `${enc} · ${q} ${p.crf} · ${p.preset} · ${p.concurrency} 并行${out}`
+})
+
+// 参数过高（输出可能比原片大）实时警告
+const qpWarn = computed(() => {
+  const p = finalParams()
+  if (p.encoder === 'nvenc' && p.crf < 26) {
+    return `当前 QP ${p.crf} 接近无损，输出很可能比原片大。软件会自动重压直到不大于原片，但日常建议 QP 28 以上。`
+  }
+  if (p.encoder === 'libx265' && p.crf < 18) {
+    return `当前 CRF ${p.crf} 接近无损，输出可能比原片大。建议 CRF 18~23。`
+  }
+  return ''
 })
 </script>
 
@@ -215,12 +238,15 @@ const fileSummary = computed(() => {
               <div class="hint">CPU 软编画质好、体积小但慢；GPU 硬编快 5~10 倍，日常批量推荐。</div>
             </div>
             <div class="field">
-              <label>画质 CRF（1~51，越小越清晰、文件越大）</label>
+              <label>画质（GPU 为 QP / CPU 为 CRF，1~51，越小越清晰、文件越大）</label>
               <input v-model.number="store.advanced.crf" type="number" min="1" max="51" />
-              <div class="hint">18 = 画质很好（默认）；23 = 视觉几乎无差别、体积更小（推荐）；26 = 更小但小字可能略糊。</div>
+              <div class="hint">
+                GPU 硬编：QP 28≈原片 70%（推荐）、QP 32≈50%；QP 小于 24 可能比原片还大。
+                CPU 软编：CRF 18 画质很好、23 视觉几乎无差别（推荐）。
+              </div>
             </div>
             <div class="field">
-              <label>预设 preset（仅 CPU 软编生效）</label>
+              <label>预设 preset（仅 CPU 软编生效，GPU 固定 p5）</label>
               <select v-model="store.advanced.preset">
                 <option value="ultrafast">ultrafast（最快）</option>
                 <option value="fast">fast（默认，平衡）</option>
@@ -241,6 +267,13 @@ const fileSummary = computed(() => {
               <div class="hint">所有视频输出到同一目录；留空则在每个视频所在文件夹下创建 compressed 子目录。</div>
             </div>
           </div>
+
+          <!-- 实时参数回显：高级启用时显示实际将使用的参数 -->
+          <div v-if="store.advanced.enabled" class="param-echo">
+            <span class="status-pill done">将使用</span>
+            <code>{{ actualTag }}</code>
+          </div>
+          <div v-if="store.advanced.enabled && qpWarn" class="param-warn">⚠ {{ qpWarn }}</div>
         </div>
 
         <div style="margin-top: 16px; text-align: right">
@@ -250,12 +283,11 @@ const fileSummary = computed(() => {
       </div>
     </template>
 
-    <!-- 步骤 2：已选模式 + 拖拽选文件 -->
+    <!-- 步骤 2：已选模式 + 添加视频 + 直接开始 -->
     <template v-else-if="store.step === 2">
       <div class="stepper">
         <div class="step done"><span class="no">1</span>选择模式</div>
-        <div class="step active"><span class="no">2</span>添加视频</div>
-        <div class="step"><span class="no">3</span>并行数与开始</div>
+        <div class="step active"><span class="no">2</span>添加视频并开始</div>
       </div>
 
       <div class="card">
@@ -265,7 +297,8 @@ const fileSummary = computed(() => {
             <b>{{ store.selectedMode.title }}</b>
             <span class="muted" style="margin-left: 10px">{{ store.selectedMode.desc }}</span>
           </div>
-          <div class="mode-tag">{{ store.selectedMode.tag }}</div>
+          <!-- 高级已启用时显示实际参数，否则显示模式模板参数 -->
+          <div class="mode-tag">{{ store.advanced.enabled ? actualTag : store.selectedMode.tag }}</div>
         </div>
       </div>
 
@@ -280,16 +313,17 @@ const fileSummary = computed(() => {
           <div class="dz-sub">支持 mp4 / mkv / mov / avi / flv / wmv / ts / webm 等格式</div>
         </div>
 
-        <div style="display: flex; gap: 10px; margin-top: 12px">
+        <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; align-items: center">
           <button class="btn" @click="pickFiles">选择视频文件</button>
           <button class="btn" @click="pickFolder">选择文件夹（递归）</button>
-          <span v-if="fileSummary.n" class="muted" style="font-size: 12px; align-self: center">
-            已添加 {{ fileSummary.n }} 个{{ fileSummary.done ? `（其中 ${fileSummary.done} 个已完成将自动跳过）` : '' }}
+          <button class="btn btn-ghost" v-if="fileSummary.n" @click="clearFiles">清空列表</button>
+          <span v-if="fileSummary.n" class="muted" style="font-size: 12px">
+            已添加 {{ fileSummary.n }} 个视频{{ fileSummary.skipped ? `（${fileSummary.skipped} 个已有结果将跳过）` : '' }}
           </span>
         </div>
 
-        <div v-if="store.files.length" class="file-list">
-          <div v-for="f in store.files" :key="f.id" class="file-row">
+        <div v-if="pendingFiles.length" class="file-list">
+          <div v-for="f in pendingFiles" :key="f.id" class="file-row">
             <span class="status-pill" :class="f.status">{{ f.status === 'done' ? '已完成' : f.status === 'skipped' ? '已跳过' : f.status === 'failed' ? '失败' : f.status === 'running' ? '压缩中' : '待压缩' }}</span>
             <span class="fname" :title="f.absPath">{{ f.absPath }}</span>
             <span class="fsize">{{ fmtSize(f.size) }}</span>
@@ -297,45 +331,14 @@ const fileSummary = computed(() => {
           </div>
         </div>
 
-        <div style="margin-top: 16px; display: flex; justify-content: space-between">
+        <div v-if="startError" class="error-text" style="margin-top: 10px">{{ startError }}</div>
+
+        <div style="margin-top: 16px; display: flex; justify-content: space-between; align-items: center">
           <button class="btn" @click="prevStep">上一步</button>
-          <button class="btn btn-primary btn-lg" :disabled="!canNext2" @click="nextStep">下一步</button>
+          <button class="btn btn-primary btn-lg" :disabled="!canStart" @click="startCompress">开始压缩</button>
         </div>
-      </div>
-    </template>
-
-    <!-- 步骤 3：并行数 + 开始 -->
-    <template v-else-if="store.step === 3">
-      <div class="stepper">
-        <div class="step done"><span class="no">1</span>选择模式</div>
-        <div class="step done"><span class="no">2</span>添加视频</div>
-        <div class="step active"><span class="no">3</span>并行数与开始</div>
-      </div>
-
-      <div class="card">
-        <div class="card-title"><span class="dot"></span>并行压缩数量</div>
-        <div style="max-width: 420px">
-          <div class="field">
-            <label>同时压缩几个文件（1~16）</label>
-            <input v-model.number="store.advanced.concurrency" type="number" min="1" max="16" />
-            <div class="hint">
-              {{ store.advanced.encoder === 'nvenc' ? 'GPU 硬编：建议 4 个，显卡占用高时适当调低。' : 'CPU 软编：建议不超过核心数的一半，以免电脑卡顿。' }}
-            </div>
-          </div>
-        </div>
-
-        <div v-if="store.selectedMode" style="margin-top: 14px" class="muted">
-          即将压缩 {{ store.files.filter(f => ['pending','failed'].includes(f.status)).length }} 个文件：
-          {{ finalParams().encoder === 'nvenc' ? 'GPU 硬编 (hevc_nvenc)' : 'CPU 软编 (libx265)' }}
-          · CRF {{ finalParams().crf }} · 并行 {{ finalParams().concurrency }}
-          <span v-if="finalParams().outDir"> · 输出到 {{ finalParams().outDir }}</span>
-        </div>
-
-        <div v-if="startError" class="error-text">{{ startError }}</div>
-
-        <div style="margin-top: 18px; display: flex; justify-content: space-between">
-          <button class="btn" @click="prevStep">上一步</button>
-          <button class="btn btn-primary btn-lg" @click="startCompress">开始压缩</button>
+        <div v-if="pendingFiles.length" class="muted" style="font-size: 12px; text-align: right; margin-top: 6px">
+          已压缩过的文件会自动跳过；参数变化或旧结果比原片大时会自动重新压缩
         </div>
       </div>
     </template>

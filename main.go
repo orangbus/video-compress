@@ -22,6 +22,9 @@ func main() {
 		MinWidth:  980,
 		MinHeight: 680,
 		Frameless: true, // 无边框设计，顶部自定义标题栏（可拖拽）
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop: true, // 必须开启才能用 runtime.OnFileDrop 拿到拖入文件的真实路径
+		},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

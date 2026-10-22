@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // DefaultExts 默认支持处理的视频扩展名
@@ -27,10 +28,14 @@ func BuildCmd(j Job, crf int, preset, encoder string) []string {
 
 	switch encoder {
 	case "nvenc": // GPU 硬编，需 GTX10 系列以上 (HEVC)
+		// nvenc 用 constqp + QP 控制体积（实测有效：QP24≈原大小、QP28≈70%、QP32≈50%）。
+		// 不要用 vbr+cq：该 ffmpeg 上 VBR 无码率约束会失控（输出可达原片 2-4 倍）。
+		// QP 值与 x265 CRF 不可直接换算，QP 越小画质越好、文件越大。
 		args = append(args,
 			"-c:v", "hevc_nvenc",
-			"-rc", "constqp", "-qp", fmt.Sprintf("%d", crf), // 与 CRF 含义最接近的硬编品质控制
-			"-preset", "p5", "-tune", "hq",
+			"-rc", "constqp",
+			"-qp", fmt.Sprintf("%d", crf),
+			"-preset", "p5",
 			"-c:a", "copy",
 		)
 	default: // libx265 CPU 软编
@@ -59,13 +64,15 @@ func BuildCmd(j Job, crf int, preset, encoder string) []string {
 }
 
 // RunFFmpegProgress 执行 ffmpeg，解析 -progress 输出实时回调进度，返回输出文件字节数。
-// ctx 非 nil 时，取消 ctx 会终止 ffmpeg 进程。ffmpegPath 可为空（表示使用 PATH 中的 ffmpeg）。
+// onProgress 回调参数为累计已编码时长（微秒，out_time_us）。ctx 非 nil 时，取消 ctx 会终止 ffmpeg 进程。
+// ffmpegPath 可为空（表示使用 PATH 中的 ffmpeg）。
 func RunFFmpegProgress(ctx context.Context, ffmpegPath string, cmd []string, durMicros int64, onProgress func(delta int64)) (int64, error) {
 	name := ffmpegPath
 	if name == "" {
 		name = "ffmpeg"
 	}
 	c := exec.Command(name, cmd...)
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 后台静默运行，不弹命令行窗口
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return 0, err
@@ -99,10 +106,9 @@ func RunFFmpegProgress(ctx context.Context, ffmpegPath string, cmd []string, dur
 		switch {
 		case strings.HasPrefix(line, "out_time_us="):
 			if v, e := strconv.ParseInt(strings.TrimPrefix(line, "out_time_us="), 10, 64); e == nil && v > 0 {
-				delta := v - lastMicro
-				if delta > 0 {
+				if v > lastMicro {
 					lastMicro = v
-					onProgress(delta)
+					onProgress(v) // 累计已编码时长（微秒），由调用方换算百分比
 				}
 			}
 		case strings.HasPrefix(line, "total_size="):
@@ -129,6 +135,7 @@ func ProbeDuration(ffprobePath, p string) int64 {
 		name = "ffprobe"
 	}
 	c := exec.Command(name, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", p)
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := c.Output()
 	if err != nil {
 		return 0
@@ -150,6 +157,7 @@ func ProbeInfo(ffprobePath, p string) (durSec float64, width, height int, fps st
 		"-print_format", "json",
 		"-show_entries", "format=duration:stream=width,height,avg_frame_rate,codec_type",
 		p)
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := c.Output()
 	if err != nil {
 		return 0, 0, 0, ""

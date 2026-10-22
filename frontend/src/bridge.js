@@ -7,9 +7,10 @@ export const Backend = {
   RefreshEnv: () => go().RefreshEnv(),
   DownloadFFmpeg: () => go().DownloadFFmpeg(),
   GetModes: () => go().GetModes(),
-  AddFiles: (paths) => go().AddFiles(paths),
-  AddFolder: (dir) => go().AddFolder(dir),
+  AddFiles: (paths, outDir) => go().AddFiles(paths, outDir),
+  AddFolder: (dir, outDir) => go().AddFolder(dir, outDir),
   RemoveTask: (id) => go().RemoveTask(id),
+  ClearTasks: () => go().ClearTasks(),
   RetryFailed: () => go().RetryFailed(),
   ClearDone: () => go().ClearDone(),
   GetSessionTasks: () => go().GetSessionTasks(),
@@ -19,6 +20,8 @@ export const Backend = {
   StopCompress: () => go().StopCompress(),
   CompressRunning: () => go().CompressRunning(),
   OpenFolder: (path) => go().OpenFolder(path),
+  OpenVideoFiles: () => go().OpenVideoFiles(),
+  OpenVideoFolder: () => go().OpenVideoFolder(),
   CheckUpdate: () => go().CheckUpdate(),
   ForceQuit: () => go().ForceQuit(),
 }
@@ -26,13 +29,13 @@ export const Backend = {
 export const Runtime = {
   On: (name, cb) => rt()?.EventsOn(name, cb),
   Off: (name, cb) => rt()?.EventsOff(name, cb),
-  OpenFileDialog: (opts) => rt()?.OpenFileDialog(opts),
-  OpenDirectoryDialog: (opts) => rt()?.OpenDirectoryDialog(opts),
+  OnFileDrop: (cb) => rt()?.OnFileDrop(cb),
+  OnFileDropOff: () => rt()?.OnFileDropOff(),
   BrowserOpenURL: (url) => rt()?.BrowserOpenURL(url),
   WindowMinimise: () => rt()?.WindowMinimise(),
   WindowToggleMaximise: () => rt()?.WindowToggleMaximise(),
   WindowIsMaximised: () => rt()?.WindowIsMaximised(),
-  WindowClose: () => rt()?.WindowClose(),
+  Quit: () => rt()?.Quit(), // Wails 前端 runtime 没有 WindowClose，关闭窗口用 Quit（会走 OnBeforeClose 确认流程）
 }
 
 // 文件大小格式化

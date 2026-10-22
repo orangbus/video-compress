@@ -22,6 +22,9 @@ export const store = reactive({
   converting: false,         // 是否正在压缩
   ffmpegDl: { active: false, percent: 0, downloaded: 0, total: 0 },
   toast: '',                 // 轻提示
+  version: '0.1.0',          // 当前版本（与后端 AppVersion 保持一致）
+  update: null,              // 新版本信息：{hasNew, latest, releaseUrl}，null=未检测到
+  closeConfirm: null,        // 关闭确认：{count}，null=未弹出
 })
 
 let toastTimer = null

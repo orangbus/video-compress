@@ -2,16 +2,23 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"yasuo/internal/video"
 )
+
+// AppVersion 当前软件版本（与 GitHub Release tag 对应）
+const AppVersion = "0.1.0"
 
 // App 主应用结构
 type App struct {
@@ -20,6 +27,14 @@ type App struct {
 	env      video.EnvInfo
 	envFresh bool
 	engine   *video.Engine
+}
+
+// UpdateInfo 版本检测结果
+type UpdateInfo struct {
+	Current    string `json:"current"`
+	Latest     string `json:"latest"`
+	HasNew     bool   `json:"hasNew"`
+	ReleaseURL string `json:"releaseUrl"`
 }
 
 // Mode 开始页的模式卡片
@@ -337,6 +352,106 @@ func (a *App) CompressRunning() bool {
 	e := a.engine
 	a.mu.Unlock()
 	return e != nil && e.Running()
+}
+
+// --- 版本检测与关闭拦截 ---
+
+// CheckUpdate 检查 GitHub 是否有新版本（网络失败时静默，返回当前版本）
+func (a *App) CheckUpdate() UpdateInfo {
+	info := UpdateInfo{
+		Current:    AppVersion,
+		Latest:     AppVersion,
+		HasNew:     false,
+		ReleaseURL: "https://github.com/orangbus/video-compress/releases",
+	}
+	client := &http.Client{Timeout: 6 * time.Second}
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/orangbus/video-compress/releases/latest", nil)
+	if err != nil {
+		return info
+	}
+	req.Header.Set("User-Agent", "video-compress/"+AppVersion)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return info // 无法联网时不打扰，正常使用
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return info
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&rel) != nil {
+		return info
+	}
+	if strings.TrimSpace(rel.TagName) == "" {
+		return info
+	}
+	info.Latest = rel.TagName
+	if rel.HTMLURL != "" {
+		info.ReleaseURL = rel.HTMLURL
+	}
+	info.HasNew = versionNewer(rel.TagName, AppVersion)
+	return info
+}
+
+// BeforeClose 拦截窗口关闭：有正在压缩的任务时阻止关闭并通知前端弹自定义确认框
+func (a *App) BeforeClose(ctx context.Context) bool {
+	a.mu.Lock()
+	e := a.engine
+	a.mu.Unlock()
+	if e == nil || !e.Running() {
+		return false // 没有压缩任务，直接关闭
+	}
+	n := e.RunningCount()
+	if ctx != nil {
+		runtime.EventsEmit(ctx, "app:confirm-close", map[string]int{"count": n})
+	}
+	return true // 阻止关闭，等待用户确认
+}
+
+// ForceQuit 用户确认退出：停止压缩任务后彻底退出（不再触发关闭拦截）
+func (a *App) ForceQuit() {
+	a.mu.Lock()
+	e := a.engine
+	a.mu.Unlock()
+	if e != nil {
+		e.Stop()
+	}
+	if a.ctx != nil {
+		runtime.Quit(a.ctx)
+	}
+}
+
+// versionNewer 判断 latest 是否比 current 新（支持 v 前缀，如 v0.1.0）
+func versionNewer(latest, current string) bool {
+	ls := strings.Split(normalizeVersion(latest), ".")
+	cs := strings.Split(normalizeVersion(current), ".")
+	for i := 0; i < len(ls) || i < len(cs); i++ {
+		var x, y int
+		if i < len(ls) {
+			x, _ = strconv.Atoi(ls[i])
+		}
+		if i < len(cs) {
+			y, _ = strconv.Atoi(cs[i])
+		}
+		if x > y {
+			return true
+		}
+		if x < y {
+			return false
+		}
+	}
+	return false
+}
+
+func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(v, "V")
+	return v
 }
 
 // --- 其它 ---

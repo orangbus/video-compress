@@ -19,6 +19,8 @@ export const Backend = {
   StopCompress: () => go().StopCompress(),
   CompressRunning: () => go().CompressRunning(),
   OpenFolder: (path) => go().OpenFolder(path),
+  CheckUpdate: () => go().CheckUpdate(),
+  ForceQuit: () => go().ForceQuit(),
 }
 
 export const Runtime = {

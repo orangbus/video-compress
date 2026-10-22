@@ -285,6 +285,13 @@ func (e *Engine) Running() bool {
 	return e.running
 }
 
+// RunningCount 当前正在压缩的任务数（关闭确认弹窗用）
+func (e *Engine) RunningCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.countStatus(StatusRunning)
+}
+
 // Snapshot 返回会话任务快照（按添加顺序）
 func (e *Engine) Snapshot() []*VideoTask {
 	e.mu.Lock()

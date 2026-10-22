@@ -85,6 +85,16 @@ body {
   transition: all 0.15s;
 }
 .source-link:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.source-link .ver {
+  margin-left: auto;
+  font-size: 10px;
+  color: #5b6b8f;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.source-link:hover .ver { color: #cbd5e1; }
 
 /* 窗口控制按钮（侧边栏底部） */
 .win-controls {

@@ -10,6 +10,10 @@ export function AddFolder(arg1) {
   return window['go']['main']['App']['AddFolder'](arg1);
 }
 
+export function CheckUpdate() {
+  return window['go']['main']['App']['CheckUpdate']();
+}
+
 export function ClearDone() {
   return window['go']['main']['App']['ClearDone']();
 }
@@ -20,6 +24,10 @@ export function CompressRunning() {
 
 export function DownloadFFmpeg() {
   return window['go']['main']['App']['DownloadFFmpeg']();
+}
+
+export function ForceQuit() {
+  return window['go']['main']['App']['ForceQuit']();
 }
 
 export function GetEnv() {

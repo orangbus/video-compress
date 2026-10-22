@@ -49,6 +49,25 @@ function winClose() { Runtime.WindowClose() }
 const SOURCE_URL = 'https://github.com/orangbus/video-compress'
 function openSource() { Runtime.BrowserOpenURL(SOURCE_URL) }
 
+// --- 新版本检测弹窗 ---
+function onUpdateChecked(info) {
+  if (info && info.hasNew) {
+    store.version = info.current || store.version
+    store.update = info
+  }
+}
+function goDownload() {
+  if (store.update) Runtime.BrowserOpenURL(store.update.releaseUrl)
+}
+function quitForUpdate() { Backend.ForceQuit() }
+
+// --- 压缩中关闭确认弹窗 ---
+function onConfirmClose(d) {
+  store.closeConfirm = { count: (d && d.count) || 0 }
+}
+function keepCompressing() { store.closeConfirm = null }
+function quitNow() { Backend.ForceQuit() }
+
 // 事件订阅
 function onVideoEvent(ev) {
   const t = ev.task
@@ -101,6 +120,8 @@ onMounted(async () => {
     store.ffmpegDl.active = false
     store.toast = 'ffmpeg 下载失败：' + msg
   })
+  // 压缩中关闭窗口 -> 弹自定义确认框
+  Runtime.On('app:confirm-close', onConfirmClose)
   await refreshAll()
   try {
     store.modes = await Backend.GetModes()
@@ -110,6 +131,13 @@ onMounted(async () => {
     }
   } catch (e) {
     console.error(e)
+  }
+  // 启动时检查 GitHub 新版本（后台，不阻塞界面）
+  try {
+    const info = await Backend.CheckUpdate()
+    onUpdateChecked(info)
+  } catch (e) {
+    console.error('update check failed', e)
   }
   // 监听窗口尺寸变化，切换最大化/还原图标
   window.addEventListener('resize', onResize)
@@ -158,10 +186,11 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sidebar-footer">
-          <!-- 开源地址：GitHub 图标 + 仓库名 -->
+          <!-- 开源地址：GitHub 图标 + 仓库名 + 版本号 -->
           <button class="source-link" title="GitHub 开源仓库" @click="openSource">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
-            video-compress
+            <span>video-compress</span>
+            <span class="ver">v{{ store.version }}</span>
           </button>
 
           <!-- 窗口控制按钮 -->
@@ -188,6 +217,42 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
+    <!-- 新版本提示弹窗（自绘） -->
+    <div v-if="store.update" class="modal-mask" @click.self="quitForUpdate">
+      <div class="modal-card">
+        <div class="modal-title">
+          <span class="modal-dot"></span>
+          发现新版本
+        </div>
+        <div class="modal-body">
+          <p>当前版本 <b>v{{ store.version }}</b>，GitHub 已发布 <b>v{{ store.update.latest }}</b>。</p>
+          <p class="modal-warn">为保证功能可用，请先下载最新版再继续使用。</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-primary" @click="goDownload">去下载最新版</button>
+          <button class="btn-plain" @click="quitForUpdate">退出程序</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 压缩中关闭确认弹窗（自绘） -->
+    <div v-if="store.closeConfirm" class="modal-mask" @click.self="keepCompressing">
+      <div class="modal-card">
+        <div class="modal-title">
+          <span class="modal-dot warn"></span>
+          正在压缩中
+        </div>
+        <div class="modal-body">
+          <p>还有 <b>{{ store.closeConfirm.count }}</b> 个视频正在压缩。</p>
+          <p class="modal-warn">退出后当前任务将停止，进度会保留，下次打开可继续。</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-primary" @click="keepCompressing">继续压缩</button>
+          <button class="btn-danger" @click="quitNow">退出程序</button>
+        </div>
+      </div>
+    </div>
+
     <Transition name="fade">
       <div v-if="store.toast" class="toast">{{ store.toast }}</div>
     </Transition>
@@ -211,4 +276,93 @@ onBeforeUnmount(() => {
 }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.25s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* ===== 自绘弹窗（新版本提示 / 关闭确认） ===== */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  -webkit-app-region: no-drag;
+  animation: mask-in 0.18s ease;
+}
+@keyframes mask-in { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-card {
+  width: 420px;
+  max-width: 86vw;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+  padding: 22px 24px 18px;
+  border-top: 3px solid #3b82f6;
+  animation: card-in 0.2s ease;
+}
+@keyframes card-in { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #1e293b;
+  margin-bottom: 14px;
+}
+.modal-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #60a5fa, #3b82f6);
+}
+.modal-dot.warn { background: linear-gradient(135deg, #fbbf24, #f59e0b); }
+
+.modal-body { color: #475569; font-size: 13px; line-height: 1.75; }
+.modal-body b { color: #1d4ed8; }
+.modal-warn { color: #b45309; font-size: 12px; margin-top: 4px; }
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  justify-content: flex-end;
+}
+.btn-primary {
+  border: none;
+  padding: 8px 18px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #4f8ef7, #2563eb);
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-plain {
+  border: 1px solid #e2e8f0;
+  padding: 8px 18px;
+  border-radius: 9px;
+  font-size: 13px;
+  color: #475569;
+  background: #f8fafc;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-plain:hover { background: #f1f5f9; }
+.btn-danger {
+  border: none;
+  padding: 8px 18px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #f87171, #dc2626);
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.btn-danger:hover { filter: brightness(1.08); }
 </style>

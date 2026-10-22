@@ -192,20 +192,6 @@ onBeforeUnmount(() => {
             <span>video-compress</span>
             <span class="ver">v{{ store.version }}</span>
           </button>
-
-          <!-- 窗口控制按钮 -->
-          <div class="win-controls">
-            <button class="wc-btn" title="最小化" @click="winMin">
-              <svg viewBox="0 0 12 12" width="12" height="12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.4"/></svg>
-            </button>
-            <button class="wc-btn" :title="isMax ? '还原' : '最大化'" @click="winMax">
-              <svg v-if="!isMax" viewBox="0 0 12 12" width="12" height="12"><rect x="1.5" y="1.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
-              <svg v-else viewBox="0 0 12 12" width="12" height="12"><path d="M1.5 4.5V1.5h8v8h-3" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="4" width="6.5" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
-            </button>
-            <button class="wc-btn wc-close" title="关闭" @click="winClose">
-              <svg viewBox="0 0 12 12" width="12" height="12"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.4"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.4"/></svg>
-            </button>
-          </div>
         </div>
       </aside>
 
@@ -215,6 +201,20 @@ onBeforeUnmount(() => {
         <DonePage v-else-if="store.page === 'done'" />
         <HelpPage v-else-if="store.page === 'help'" />
       </main>
+
+      <!-- 窗口控制按钮（右上角） -->
+      <div class="win-controls">
+        <button class="wc-btn" title="最小化" @click="winMin">
+          <svg viewBox="0 0 12 12" width="12" height="12"><line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+        <button class="wc-btn" :title="isMax ? '还原' : '最大化'" @click="winMax">
+          <svg v-if="!isMax" viewBox="0 0 12 12" width="12" height="12"><rect x="1.5" y="1.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+          <svg v-else viewBox="0 0 12 12" width="12" height="12"><path d="M1.5 4.5V1.5h8v8h-3" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="4" width="6.5" height="6.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+        <button class="wc-btn wc-close" title="关闭" @click="winClose">
+          <svg viewBox="0 0 12 12" width="12" height="12"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.4"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.4"/></svg>
+        </button>
+      </div>
     </div>
 
     <!-- 新版本提示弹窗（自绘） -->
